@@ -1062,6 +1062,45 @@ stream {
             {{ $line }}
             {{- end }}
 
+            set $auth_request_body "";
+
+            access_by_lua_block {
+                local http = require "resty.http"
+                local cjson = require "cjson"
+
+                -- Получение сертификата клиента
+                local client_cert = ngx.var.ssl_client_cert
+
+                -- Получение сертификата сервиса B через cert-fetcher
+                local httpc = http.new()
+                local backend_host = ngx.var.upstream_host or "my-service.default.svc.cluster.local:443"
+                local res, err = httpc:request_uri("http://cert-fetcher.cert-system.svc.cluster.local/cert?host=" .. backend_host, {
+                    method = "GET"
+                })
+
+                if not res or res.status ~= 200 then
+                    ngx.log(ngx.ERR, "Failed to fetch backend cert: ", err)
+                    return ngx.exit(500)
+                end
+
+                local server_cert = cjson.decode(res.body)["certificate"]
+
+                -- Формирование JSON для отправки в OPA
+                local input = {
+                    input = {
+                        client_cert = client_cert,
+                        server_cert = server_cert,
+                        method = ngx.req.get_method(),
+                        path = ngx.var.request_uri,
+                        ip = ngx.var.remote_addr
+                    }
+                }
+                local body = cjson.encode(input)
+
+                -- Сохраняем в переменную для дальнейшей отправки
+                ngx.var.auth_request_body = body
+            }
+            
             {{ if not (empty $externalAuth.AuthSnippet) }}
             {{ $externalAuth.AuthSnippet }}
             {{ end }}
